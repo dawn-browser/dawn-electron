@@ -2,24 +2,72 @@ name: build-electron-linux
 
 on:
   push:
+    branches: [ci/bootstrap]          # only our working branch for now
+  pull_request:
     branches: [ci/bootstrap]
-  pull_request: []
 
 jobs:
-  build:
+  build-linux:
     runs-on: ubuntu-22.04
 
     steps:
-    - uses: actions/checkout@v4
+    # 1 ▸ source
+    - name: Checkout fork
+      uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-depth: 0               # needed for patch replay
 
-    - name: Set up depot_tools
-      uses: reifjulian/setup-depot-tools@v1
-      # adds depot_tools to PATH and caches git repos
-
-    - name: gclient sync (restore cache)
-      id: gclient
+    # 2 ▸ system deps (clang, build-essential, python3 already in image)
+    - name: Install extra packages
       run: |
-        gclient sync --no-history --shallow --jobs 8 --with_branch_heads --with_tags
-      # first run will take ~15-20 min; subsequent runs use Action cache
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          python3-distutils curl git
+
+    # 3 ▸ depot_tools (cached)
+    - name: Cache depot_tools
+      id: cache-depot
+      uses: actions/cache@v4
+      with:
+        path: ~/depot_tools
+        key: ${{ runner.os }}-depot-tools-v1
+
+    - name: Fetch depot_tools (if cache miss)
+      if: steps.cache-depot.outputs.cache-hit != 'true'
+      run: |
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools \
+          ~/depot_tools
+
+    - name: Add depot_tools to PATH
+      run: echo "$HOME/depot_tools" >> "$GITHUB_PATH"
+
+    # 4 ▸ sync Chromium (will also be cached by runner’s local git objects)
+    - name: gclient sync
+      run: |
+        gclient sync --no-history --shallow --jobs 8 \
+                     --with_branch_heads --with_tags
+
+    # 5 ▸ replay your patch stacks (safe even if empty)
+    - name: Apply patch queue
+      run: |
+        ./tools/apply_chromium_patches.sh
+        ./tools/apply_electron_patches.sh || true
+
+    # 6 ▸ generate Ninja files
+    - name: gn gen
+      run: |
+        cd src
+        gn gen out/Release --args="import(\"//electron/build/args/release.gn\")"
+
+    # 7 ▸ compile Electron (first run ~25–40 min, cached later)
+    - name: ninja electron
+      run: |
+        cd src
+        ninja -C out/Release electron
+
+    # 8 ▸ upload artifact for manual download
+    - name: Upload electron binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: dawn-electron-linux
+        path: src/out/Release/electron
