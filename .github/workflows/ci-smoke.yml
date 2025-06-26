@@ -2,7 +2,7 @@ name: build-electron-linux
 
 on:
   push:
-    branches: [ci/bootstrap]          # only our working branch for now
+    branches: [ci/bootstrap]      # iterate safely on this branch
   pull_request:
     branches: [ci/bootstrap]
 
@@ -11,20 +11,16 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    # 1 ▸ source
+    # ───────── 1. source ─────────
     - name: Checkout fork
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0               # needed for patch replay
+      with: { fetch-depth: 0 }
 
-    # 2 ▸ system deps (clang, build-essential, python3 already in image)
+    # ───────── 2. system deps ─────────
     - name: Install extra packages
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends \
-          python3-distutils curl git
+      run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-distutils curl git
 
-    # 3 ▸ depot_tools (cached)
+    # ───────── 3. depot_tools ─────────
     - name: Cache depot_tools
       id: cache-depot
       uses: actions/cache@v4
@@ -32,40 +28,49 @@ jobs:
         path: ~/depot_tools
         key: ${{ runner.os }}-depot-tools-v1
 
-    - name: Fetch depot_tools (if cache miss)
+    - name: Fetch depot_tools if cache miss
       if: steps.cache-depot.outputs.cache-hit != 'true'
-      run: |
-        git clone https://chromium.googlesource.com/chromium/tools/depot_tools \
-          ~/depot_tools
+      run: git clone https://chromium.googlesource.com/chromium/tools/depot_tools ~/depot_tools
 
     - name: Add depot_tools to PATH
       run: echo "$HOME/depot_tools" >> "$GITHUB_PATH"
 
-    # 4 ▸ sync Chromium (will also be cached by runner’s local git objects)
-    - name: gclient sync
+    # ───────── 4. create .gclient ─────────
+    - name: Write .gclient file
       run: |
-        gclient sync --no-history --shallow --jobs 8 \
-                     --with_branch_heads --with_tags
+        cat > .gclient <<'EOF'
+        solutions = [
+          {
+            "managed": False,
+            "name": "src/electron",
+            "url": "https://github.com/dawn-browser/dawn-electron",
+          },
+        ]
+        EOF
 
-    # 5 ▸ replay your patch stacks (safe even if empty)
+    # ───────── 5. sync Chromium ─────────
+    - name: gclient sync
+      run: gclient sync --no-history --shallow --jobs 8 --with_branch_heads --with_tags
+
+    # ───────── 6. apply patch stacks ─────────
     - name: Apply patch queue
       run: |
         ./tools/apply_chromium_patches.sh
         ./tools/apply_electron_patches.sh || true
 
-    # 6 ▸ generate Ninja files
+    # ───────── 7. generate build files ─────────
     - name: gn gen
       run: |
         cd src
         gn gen out/Release --args="import(\"//electron/build/args/release.gn\")"
 
-    # 7 ▸ compile Electron (first run ~25–40 min, cached later)
+    # ───────── 8. compile Electron ─────────
     - name: ninja electron
       run: |
         cd src
         ninja -C out/Release electron
 
-    # 8 ▸ upload artifact for manual download
+    # ───────── 9. upload artifact ─────────
     - name: Upload electron binary
       uses: actions/upload-artifact@v4
       with:
