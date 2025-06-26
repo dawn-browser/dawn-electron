@@ -1,0 +1,25 @@
+name: build-electron-linux
+
+on:
+  push:
+    branches: [ci/bootstrap]
+  pull_request: []
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up depot_tools
+      uses: reifjulian/setup-depot-tools@v1
+      # adds depot_tools to PATH and caches git repos
+
+    - name: gclient sync (restore cache)
+      id: gclient
+      run: |
+        gclient sync --no-history --shallow --jobs 8 --with_branch_heads --with_tags
+      # first run will take ~15-20 min; subsequent runs use Action cache
